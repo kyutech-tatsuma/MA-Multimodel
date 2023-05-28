@@ -10,7 +10,8 @@ mp4データから音声と動画をそれぞれ抽出し、それらから得�
 
 ## モデルの学習方法
 ### motion captureによる処理
-まず、https://www.dropbox.com/sh/7xbup2qsn7vvjxo/AABWFksdlgOMXR_r5v3RwKRYa?dl=0　にアクセスし、body_pose_model.pthとhand_pose_model.pthをダウンロードします。ダウンロード完了後、detect_pose/model/にpthファイルを移動させます。
+まず、https://www.dropbox.com/sh/7xbup2qsn7vvjxo/AABWFksdlgOMXR_r5v3RwKRYa?dl=0　
+にアクセスし、body_pose_model.pthとhand_pose_model.pthをダウンロードします。ダウンロード完了後、detect_pose/model/にpthファイルを移動させます。
 
 その後、detect_poseディレクトリに移動し、以下のコマンドを実行します。このコマンドを実行することで指定したディレクトリー内の全ての動画に対してモーションキャプチャー(openpose)で処理を行います。
 ```
