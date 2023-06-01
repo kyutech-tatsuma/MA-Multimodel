@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
-
+import torch.nn.functional as F
 import cv2
 from pydub import AudioSegment
 
@@ -15,12 +15,12 @@ class VideoNet(nn.Module):
         super(VideoNet, self).__init__()
         self.conv1 = nn.Conv3d(3, 32, kernel_size=3, stride=1, padding=1)
         self.pool = nn.MaxPool3d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(32 * 16 * 16 * 16, 128)  # This needs to be adjusted based on input size and convolution/pooling operations
+        self.fc1 = nn.Linear(32 * 2500 * 56 * 56, 128)  # This needs to be adjusted based on input size and convolution/pooling operations
         self.fc2 = nn.Linear(128, 1)
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
-        x = x.view(-1, 32 * 16 * 16 * 16)  # This needs to be adjusted based on input size and convolution/pooling operations
+        x = x.view(x.size(0), -1)  # This needs to be adjusted based on input size and convolution/pooling operations
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return x
@@ -29,7 +29,7 @@ class VideoNet(nn.Module):
 class AudioNet(nn.Module):
     def __init__(self):
         super(AudioNet, self).__init__()
-        self.fc1 = nn.Linear(40000, 120)  # adjust the input size to match the size of your audio features
+        self.fc1 = nn.Linear(661501, 120)  # adjust the input size to match the size of your audio features
         self.fc2 = nn.Linear(120, 84)
         self.fc3 = nn.Linear(84, 10)
 
@@ -45,7 +45,7 @@ class CombinedNet(nn.Module):
         super(CombinedNet, self).__init__()
         self.video_net = video_net
         self.audio_net = audio_net
-        self.fc1 = nn.Linear(20, 10)
+        self.fc1 = nn.Linear(11, 10)
         self.fc2 = nn.Linear(10, 1)  # adjust the output size to match your needs
 
     def forward(self, video_data, audio_data):

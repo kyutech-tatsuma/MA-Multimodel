@@ -7,23 +7,64 @@ from torch.utils.data import DataLoader
 from model import VideoNet, AudioNet, CombinedNet
 from dataset import VideoAudioDataset
 import argparse
+import torch.nn as nn
+import torch.nn.functional as F
+import torch
+import numpy as np
+
+class EarlyStopping:
+    """早期終了 (early stopping) を制御するクラス"""
+    def __init__(self, patience=7, verbose=False, delta=0):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.delta = delta
+
+    def __call__(self, val_loss, model):
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        '''検証用ロスが改善した時にモデルを保存します'''
+        if self.verbose:
+            print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
+        torch.save(model.state_dict(), 'checkpoint.pt')
+        self.val_loss_min = val_loss
+
+
 
 def train_multimodel(opt):
+    # 引数からエポック数とデータセットのパスを取得
     epochs = opt.epochs
     dataset = opt.data
-    # csvファイルの読み込み
+    # csvファイルからデータを読み込む
     data = pd.read_csv(dataset)
 
-    # ビデオのパスと動画に付与された数値を対応させる
+    # ビデオファイルのパスと目標値をリストとして取得
     video_files = data['video_path'].tolist()
     targets = data['target'].tolist()
 
     # データを訓練用と評価用に分割する
-    video_files_train, video_files_val, targets_train, targets_val = train_test_split(video_files, targets, test_size=0.2, random_state=42)
+    video_files_train, video_files_val, targets_train, targets_val = train_test_split(video_files, targets, test_size=0.1, random_state=42)
 
     # 訓練用と評価用のデータセットを作成する
-    train_dataset = VideoAudioDataset(video_files_train)
-    val_dataset = VideoAudioDataset(video_files_val)
+    train_dataset = VideoAudioDataset(video_files_train, targets_train)
+    val_dataset = VideoAudioDataset(video_files_val, targets_val)
 
     # データをロードする
     '''DataLoaderはデータのロードとバッチ処理を効率的に行うためのクラス。
@@ -36,6 +77,7 @@ def train_multimodel(opt):
     4. 自動化されたメモリ管理： データローダーはGPUメモリ内でのデータ管理を自動化する。これにより、訓練中に必要なデータが必要なタイミングで利用可能になり、メモリの効率的な使用が可能になる。
 
     '''
+    # データローダーの作成
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
 
@@ -43,68 +85,105 @@ def train_multimodel(opt):
     video_net = VideoNet()
     audio_net = AudioNet()
 
-    # 二つのネットワークを統一するネットワークもインスタンス化
-    model = CombinedNet(video_net, audio_net)
+    model = CombinedNet(video_net, audio_net) # ビデオとオーディオのネットワークを結合したネットワーク
 
-    # 損失関数と評価関数を定義
-    criterion = nn.MSELoss()  # 損失関数に平均2乗誤差を使用
+    # 損失関数と最適化手法を定義
+    criterion = nn.MSELoss()  # 平均二乗誤差を損失関数として使用
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
-    # 損失関数の変化を記録するための配列
+    # 訓練中の損失の記録用リスト
     train_losses = []
     val_losses = []
-
-    # ネットワークの学習
+    early_stopping = EarlyStopping(patience=7, verbose=True)
+    # モデルの訓練
     for epoch in range(epochs): 
-        # 一回の学習ごとに損失関数の値を初期化する
+        model.train() # 訓練モードに設定
         running_loss = 0.0
-        # データの中身をループさせる
+        total_loss = 0
         for i, data in enumerate(train_loader, 0):
-            # train_loaderの要素からデータを取得する
+            # データローダーからデータを取得し、型をfloatに変換
             video_data, audio_data, targets = data
+            video_data = video_data.float().requires_grad_()
+            audio_data = audio_data.float().requires_grad_()
+            targets = targets.float()
+            targets = targets.unsqueeze(1) # 目標値の次元を調整
+                    
+            optimizer.zero_grad() # 勾配をリセット
 
-            '''既存の勾配をリセットする。
-            PyTorchでは勾配を累積するという動作を持つため、非常に重要な関数。
-            ニューラルネットワークの訓練では、通常誤差を計算し、その誤差を用いて各層のパラメータを更新する。この時、誤差は各パラメータに対する勾配として表される。
-            PyTorchでは、勾配は各パラメータに対して累積される。これは、RNNのような再起的なネットワークの訓練では役に立つが、一般的なネットワークの訓練では、各更新ステップごとに勾配をリセットすることが必要。
-            '''
-            optimizer.zero_grad()
-
-            # ネットワークに学習させ、損失関数、評価関数の計算を行う
+            # フォワードプロパゲーション
             outputs = model(video_data, audio_data)
+            # 損失の計算とバックプロパゲーション
             loss = criterion(outputs, targets)
             loss.backward()
+            # loss.backward() と optimizer.step() の間で使用します
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
+            # パラメータの更新
             optimizer.step()
 
-            # ロスの加算
             running_loss += loss.item()
-            if i % 2000 == 1999:    # print every 2000 mini-batches
+            # ロスの計算と記録
+            if i % 100 == 99:    # print every 2000 mini-batches
                 print('[%d, %5d] loss: %.3f' %
-                    (epoch + 1, i + 1, running_loss / 2000))
-                train_losses.append(running_loss / 2000)
+                    (epoch + 1, i + 1, running_loss / 100))
+                train_losses.append(running_loss / 100)
                 running_loss = 0.0
+        # -------train process----------
+        # -------val process--------
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():  # 勾配計算を無効化
+            for data in val_loader:
+                # データローダーからデータを取得し、型をfloatに変換
+                video_data, audio_data, targets = data
+                video_data = video_data.float()
+                audio_data = audio_data.float()
+                targets = targets.float()
+                targets = targets.unsqueeze(1)  # 目標値の次元を調整
+                # フォワードプロパゲーション
+                outputs = model(video_data, audio_data)
+                # 損失の計算
+                loss = criterion(outputs, targets)
+                val_loss += loss.item()
 
+        # 平均バリデーションロスを計算
+        val_loss = val_loss / len(val_loader)
+        val_losses.append(val_loss)
+        print('Epoch: {}, Training Loss: {}, Validation Loss: {}'.format(epoch + 1, running_loss / len(train_loader), val_loss))
+        # 早期停止の判定
+        early_stopping(val_loss, model)
+        if early_stopping.early_stop:
+            print("Early stopping")
+            break
     print('Finished Training')
 
     # モデルの保存
-    torch.save(model.state_dict(), 'combined_model.pth')
+    torch.save(model.state_dict(), 'endoflearning.pth')
 
-    # モデルの評価を行う
-    model.eval()
-    with torch.no_grad():  # 評価用データセットを使って評価を行う
+    # モデルの評価
+    model.eval() # 評価モードに設定
+    with torch.no_grad():  # 勾配計算を無効化
         total_loss = 0
         for i, data in enumerate(val_loader, 0):
+            # データローダーからデータを取得し、型をfloatに変換
             video_data, audio_data, targets = data
+            video_data = video_data.float()
+            audio_data = audio_data.float()
+            targets = targets.float()
+            targets = targets.unsqueeze(1) # 目標値の次元を調整
+            # フォワードプロパゲーション
             outputs = model(video_data, audio_data)
+            # 損失の計算
             loss = criterion(outputs, targets)
             total_loss += loss.item()
+            # ロスの計算と記録
             val_losses.append(total_loss / (i+1))
 
-    # 学習過程の可視化
+    # 訓練と評価の損失のグラフの作成
     plt.figure()
     plt.plot(train_losses, label='Training loss')
     plt.plot(val_losses, label='Validation loss')
     plt.legend(frameon=False)
+    plt.savefig('loss_graph.png')
     plt.show()
 
     print('Validation Loss: %.3f' % (total_loss / len(val_loader)))
