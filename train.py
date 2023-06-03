@@ -31,7 +31,8 @@ class EarlyStopping:
             self.save_checkpoint(val_loss, model)
         elif score < self.best_score + self.delta:
             self.counter += 1
-            print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
@@ -46,7 +47,22 @@ class EarlyStopping:
         torch.save(model.state_dict(), 'checkpoint.pt')
         self.val_loss_min = val_loss
 
+# モデルの量子化
+def quantize_model(model):
+    model.qconfig = torch.quantization.get_default_qconfig('fbgemm')# qnnpack
+    torch.quantization.prepare(model, inplace=True)
 
+    # ここでのモデルの評価は、オブザーバーがレイヤーの重みとバイアスを調査して、それぞれの最小値と最大値を見つけるために必要です。
+    # 通常、このステップではモデルに対して一部のサンプルデータを入力します。
+
+    # Calibrate with a few batches of data
+    for data in train_loader: 
+        video_data, audio_data, targets = data
+        video_data = video_data.float()
+        audio_data = audio_data.float()
+        model(video_data, audio_data)
+
+    torch.quantization.convert(model, inplace=True)
 
 def train_multimodel(opt):
     # 引数からエポック数とデータセットのパスを取得
@@ -61,6 +77,7 @@ def train_multimodel(opt):
 
     # データを訓練用と評価用に分割する
     video_files_train, video_files_val, targets_train, targets_val = train_test_split(video_files, targets, test_size=0.1, random_state=42)
+
 
     # 訓練用と評価用のデータセットを作成する
     train_dataset = VideoAudioDataset(video_files_train, targets_train)
@@ -103,6 +120,11 @@ def train_multimodel(opt):
         for i, data in enumerate(train_loader, 0):
             # データローダーからデータを取得し、型をfloatに変換
             video_data, audio_data, targets = data
+            print("Batch", i+1)
+            for j in range(len(video_data)):
+                print("Data", j+1)
+                print("Frames shape:", video_data[j].shape)
+                print("Audio spectrogram shape:", audio_data[j].shape)
             video_data = video_data.float().requires_grad_()
             audio_data = audio_data.float().requires_grad_()
             targets = targets.float()
@@ -156,9 +178,6 @@ def train_multimodel(opt):
             break
     print('Finished Training')
 
-    # モデルの保存
-    torch.save(model.state_dict(), 'endoflearning.pth')
-
     # モデルの評価
     model.eval() # 評価モードに設定
     with torch.no_grad():  # 勾配計算を無効化
@@ -186,6 +205,13 @@ def train_multimodel(opt):
     plt.savefig('loss_graph.png')
     plt.show()
 
+    # 量子化を適用
+    quantize_model(video_net)
+    quantize_model(audio_net)
+    quantize_model(model)  # CombinedNet
+    # モデルの保存
+    torch.save(model.state_dict(), 'optimized_model.pt')
+    
     print('Validation Loss: %.3f' % (total_loss / len(val_loader)))
 
 if __name__=='__main__':
