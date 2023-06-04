@@ -22,7 +22,7 @@ class EarlyStopping:
         self.early_stop = False
         self.val_loss_min = np.Inf
         self.delta = delta
-
+    # callメソッドはインスタンスそのものが関数のように実行されたときに呼び出される関数
     def __call__(self, val_loss, model):
         score = -val_loss
 
